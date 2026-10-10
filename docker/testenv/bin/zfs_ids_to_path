@@ -1,0 +1,4 @@
+#!/bin/sh
+# Mocking successful path resolution
+echo "/Readme.md"
+exit 0

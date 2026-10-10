@@ -1,0 +1,3 @@
+#!/bin/sh
+# Mocking successful write
+exit 0
