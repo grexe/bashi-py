@@ -44,7 +44,7 @@ This design ensures that file access is always mediated by a stable identifier, 
 
 ### Conceptual Workflow
 
-```mermaidjs
+```mermaid
 @startuml
 title SEN Remote Metadata Enrichment Workflow
 
