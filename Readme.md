@@ -45,50 +45,49 @@ This design ensures that file access is always mediated by a stable identifier, 
 ### Conceptual Workflow
 
 ```mermaid
-@startuml
-title SEN Remote Metadata Enrichment Workflow
+sequenceDiagram
+    autonumber
+    actor U as User
+    participant C as Mac / Haiku Client (SEN)
+    participant P as Local Plugin (Comic Scraper)
+    participant S as TrueNAS Server (SEN Helper)
+    participant Z as ZFS Volume
 
-actor "User" as U
-participant "Mac / Haiku Client (SEN)" as C
-participant "Local Plugin (Comic Scraper)" as P
-participant "TrueNAS Server (SEN Helper)" as S
-database "ZFS Volume" as Z
+    title SEN Remote Metadata Enrichment Workflow
 
-U -> C: Invokes "Enrich" on shared file
+    U->>C: Invokes "Enrich" on shared file
 
-C -> C: 1. Determine local file path / configuration
-note right of C: 2. Check if shared path is configured for remote helper (Server: S)
-C -> C: 3. Establish HTTP/SSH Connection (to S)
+    Note over C: 1. Determine local file path / configuration<br/>2. Check if shared path is configured for remote helper (Server: S)<br/>3. Establish HTTP/SSH Connection (to S)
 
-group Resolve ZFS Object ID (SEN:ID)
-    C -> C: 4. Try reading SEN:ID from file xattrs (Local FS API)
-    alt ID is found (First access or Haiku native support)
-        C -> C: 5a. Store existing ID
-    else ID is NOT found (e.g., Mac, non-BFS)
-        C -> S: 5b. GET request: Resolve Object ID for path
-        S -> Z: 8. ZFS CLI Query: Path -> Object ID
-        Z --> S: ZFS Object ID (e.g., 524288)
-        S --> C: ZFS Object ID (524288)
-        C -> C: 5b. Store ID as SEN:ID
+    rect rgb(240, 240, 245)
+        note right of C: Group: Resolve ZFS Object ID (SEN:ID)
+        C->>C: 4. Try reading SEN:ID from file xattrs (Local FS API)
+        alt ID is found (First access or Haiku native support)
+            C->>C: 5a. Store existing ID
+        else ID is NOT found (e.g., Mac, non-BFS)
+            C->>S: 5b. GET request: Resolve Object ID for path
+            S->>Z: 8. ZFS CLI Query: Path -> Object ID
+            Z-->>S: ZFS Object ID (e.g., 524288)
+            S-->>C: ZFS Object ID (524288)
+            C->>C: 5b. Store ID as SEN:ID
+        end
     end
-end
 
-C -> P: 6. Invoke Plugin with Filepath + SEN:ID
-note right of P: 4. Plugin resolves data (e.g., Comic Vine API)
-P --> C: 6. Returns Cleaned Metadata (JSON)
+    C->>P: 6. Invoke Plugin with Filepath + SEN:ID
+    Note right of P: 4. Plugin resolves data (e.g., Comic Vine API)
+    P-->>C: 6. Returns Cleaned Metadata (JSON)
 
-C -> S: 7. POST Request: Write Xattrs (Metadata + SEN:ID)
+    C->>S: 7. POST Request: Write Xattrs (Metadata + SEN:ID)
 
-S -> S: 8. ZFS CLI Query: Object ID -> Current File Path
-note right of S: Uses stable Object ID to find current location, bypassing mount/inode issues
+    Note right of S: Uses stable Object ID to find current location, bypassing mount/inode issues
+    S->>S: 8. ZFS CLI Query: Object ID -> Current File Path
 
-S -> Z: 9. Write Attributes: setfattr -n user.custom.meta -v 'JSON' Path
-Z --> S: Xattr Write Confirmation
+    S->>Z: 9. Write Attributes: setfattr -n user.custom.meta -v 'JSON' Path
+    Z-->>S: Xattr Write Confirmation
 
-S --> C: 10. OK / Success Confirmation
+    S-->>C: 10. OK / Success Confirmation
 
-C -> U: Enrichment Complete
-@enduml
+    C->>U: Enrichment Complete
 ```
 
 -----
