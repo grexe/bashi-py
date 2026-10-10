@@ -1,0 +1,28 @@
+services:
+  # ----------------------------------------------------------------
+  # 3. SEN BASHI: ZFS/xattr Bridge
+  # ----------------------------------------------------------------
+  sen-bashi:
+    # Use a local Dockerfile build if you can't push to a registry
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    # Otherwise, use an images
+    container_name: sen-bashi
+    ports:
+      - "5001:5001" # Access via TrueNAS_IP:5001
+    user: "568:568" # MUST use the TrueNAS 'apps' UID/GID for file access!
+    volumes:
+      - ./testenv/data:/data
+      # Mount local directory with mocks to override standard tools
+      - ./testenv/bin:/opt/mock
+      # You might need to bind mount system utilities for setfattr
+      # This part is highly dependent on TrueNAS SCALE's base OS.
+      # You may need to install setfattr inside the container via the Dockerfile.
+    environment:
+      # Optional: set logging level, etc.
+      - FLASK_ENV=development
+    restart: unless-stopped
+    # CRITICAL NOTE: To use 'setfattr' and query ZFS IDs, this container
+    # may need elevated privileges (e.g., host networking, or access to ZFS mounts)
+    # which is often complex in TrueNAS's GUI wrapper.

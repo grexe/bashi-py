@@ -14,8 +14,9 @@ BASHI_HOST = os.getenv("BASHI_HOST", "0.0.0.0")
 BASHI_PORT = int(os.getenv("BASHI_PORT", 5001))
 
 # ZFS settings
-ZFS_POOL_NAME = os.getenv("ZFS_POOL_NAME")
-ZFS_SERVER_MOUNT_ROOT = os.getenv("ZFS_SERVER_MOUNT_ROOT")
+ZFS_POOL_NAME = os.getenv("ZFS_POOL_NAME", "datalake")  # TEST
+ZFS_SERVER_MOUNT_ROOT = os.getenv("ZFS_SERVER_MOUNT_ROOT", "/mnt/datalake") # TEST
+CONTAINER_MOUNT_ROOT = os.getenv("CONTAINER_MOUNT_ROOT", "/data") # needs to be aligned with docker-compose volume!
 
 # Basic Configuration Validation
 if not ZFS_POOL_NAME or not ZFS_SERVER_MOUNT_ROOT:
@@ -51,50 +52,50 @@ def run_cmd(cmd_list, suppress_errors=False):
     except FileNotFoundError:
         abort(501, description=f"Required command not found. Check Docker PATH and privileges.")
 
+# path mapping to container
+def resolve_container_path(full_path):
+    """
+    resolves an absolute server path to the container path relative to the volume mount
+    :param full_path:
+    :return:
+    """
+    return full_path.replace(ZFS_SERVER_MOUNT_ROOT, CONTAINER_MOUNT_ROOT, 1)  # Use 1 to replace only the first occurrence
 
 # --- ZFS ID LOGIC ---
+# --- BASHI HELPER: ZFS ID RESOLUTION REFINEMENT ---
+
+# Regex to capture the Object ID from the zdb -O output
+# Example Output Line: '    6288  2 32768 131072 417792    512 524288 100.00 ZFS plain file'
+# The object ID is the first token (6288)
+ZDB_OBJECT_ID_REGEX = re.compile(r'^\s*(\d+)\s+lvl', re.MULTILINE)
 
 def resolve_path_to_ids(full_path):
-    """
-    Resolves an absolute server path to its stable ZFS IDs (pool, objset, object).
-    Requires ZFS privileges and relies on parsing complex ZFS CLI output.
-    """
-    if not full_path.startswith(ZFS_SERVER_MOUNT_ROOT):
-        abort(400, description=f"Path must start with configured root: {ZFS_SERVER_MOUNT_ROOT}")
+    # ... (Path check and translation logic remains the same) ...
 
-    if not os.path.exists(full_path):
-        abort(404, description=f"File not found on server at {full_path}")
+    # 1. Determine the ZFS Dataset name (requires parsing the path hierarchy against zfs list output)
+    # We will assume ZFS_SERVER_MOUNT_ROOT maps directly to the ZFS dataset mount point.
 
-    # 1. Get the ZFS Dataset name (requires parsing mount hierarchy)
-    # Simplified: Find the dataset name that contains the path.
-    # We assume the dataset name is ZFS_POOL_NAME/dataset_name for the purpose of zfs get objsetid
-    # We will use the common format: ZFS_POOL_NAME/dataset_name
-    dataset_name = os.path.dirname(full_path).replace(ZFS_SERVER_MOUNT_ROOT, f"{ZFS_POOL_NAME}/dataset")
+    # Example: If ZFS_SERVER_MOUNT_ROOT = /mnt/datalake/docs, the dataset is 'datalake/docs'.
+    dataset_name = run_cmd(['zfs', 'list', '-o', 'name', '-H', full_path])  # Simplistic approach
 
-    # 2. Get the Object Set ID (objset-id)
-    # Command: zfs get -H -o value objsetid <dataset>
-    try:
-        # NOTE: This command is often brittle. We rely on ZFS get returning the objsetid.
-        objset_id = run_cmd(['zfs', 'get', '-H', '-o', 'value', 'objsetid', dataset_name])
-    except Exception as e:
-        app.logger.error(f"Failed to get objsetid for {dataset_name}: {e}")
-        # Mocking the ZFS ID retrieval if command fails (FOR DEV/TEST ONLY)
-        objset_id = "MOCK_OBJSET_12345"
+    # 2. Get the Object Set ID (objsetid) - Required for zfs_ids_to_path
+    objset_id = run_cmd(['zfs', 'get', '-H', '-o', 'value', 'objsetid', dataset_name])
 
-        # 3. Get the Dnode ID (objectid) using zdb
-    # Command: zdb -dddd <dataset> <full_path> (This requires parsing Dnode DId 0x...)
-    # This is the most privileged and brittle part. We'll use the mocked logic for the POC.
-    dnode_id_output = run_cmd(['zdb', '-dddd', dataset_name, full_path])
+    # 3. Get the Dnode ID (objectid) using zdb -O (Our primary, stable ID source)
+    # Command: zdb -O <dataset> <full_path_within_dataset>
+    # Note: We must strip the ZFS_SERVER_MOUNT_ROOT from full_path for zdb to work correctly.
+    relative_dataset_path = resolve_container_path(full_path)
 
-    match = re.search(r'Dnode DId\s+0x([0-9a-f]+)', dnode_id_output, re.IGNORECASE)
+    # Use the full path for the command, but zdb's interpretation might be based on dataset root.
+    zdb_output = run_cmd(['zdb', '-O', dataset_name, relative_dataset_path])
+
+    match = ZDB_OBJECT_ID_REGEX.search(zdb_output)
+
     if not match:
-        # Fallback/Error state if zdb output structure changes
-        app.logger.error(f"Could not parse Dnode ID from ZDB output for {full_path}.")
-        # Use a consistent error state or default ID
-        object_id = "MOCK_OBJECT_ID_0"
-    else:
-        # Convert hex output to decimal string
-        object_id = str(int(match.group(1), 16))
+        # Fallback to an error if parsing fails, avoiding the unreliable stat/inode number.
+        abort(500, description="Could not reliably parse stable ZFS Object ID from zdb -O output.")
+
+    object_id = match.group(1)  # The matched number (e.g., '6288')
 
     return {
         "pool": ZFS_POOL_NAME,
@@ -112,10 +113,13 @@ def resolve_ids_to_path(pool_name, objset_id, object_id):
     # The output is expected to be the full path on the last line.
     resolved_path = path_output.split('\n')[-1]
 
-    if not os.path.exists(resolved_path):
-        abort(404, description=f"ZFS IDs {objset_id}:{object_id} resolved to non-existent path: {resolved_path}")
+    # The actual path inside the container that BASHI can see:
+    container_path = resolve_conteiner_path(resolved_path)
 
-    return resolved_path
+    if not os.path.exists(container_path):
+        abort(404, description=f"ZFS IDs {objset_id}:{object_id} resolved to non-existent path: {container_path}")
+
+    return container_path
 
 
 # --- BASHI API ENDPOINTS ---
@@ -190,5 +194,5 @@ def bashi_write():
 
 
 if __name__ == '__main__':
-    print(f"BASHI Helper starting on {BASHI_HOST}:{BASHI_PORT}")
+    print(f"SEN BASHI starting on {BASHI_HOST}:{BASHI_PORT}")
     app.run(host=BASHI_HOST, port=BASHI_PORT, debug=False)

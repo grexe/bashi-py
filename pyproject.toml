@@ -1,6 +1,9 @@
 [project]
 name = "bashi-py"
 version = "0.1.0"
-description = "Add your description here"
+description = "a helper for SEN to manage remote stable semantic links with ZFS pools"
 requires-python = ">=3.9"
-dependencies = []
+dependencies = [
+    "flask>=3.1.2",
+    "python-dotenv>=1.2.1",
+]
